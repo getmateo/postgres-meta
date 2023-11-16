@@ -13,7 +13,7 @@ import {
   PG_META_PORT,
 } from './constants.js'
 import { apply as applyTypescriptTemplate } from './templates/typescript.js'
-import { apply as applyZodTemplate } from './templates/typescript.js'
+import { apply as applyZodTemplate } from './templates/zod.js'
 import {TemplateProps} from "./types.js";
 
 const logger = pino({
