@@ -8,6 +8,7 @@ import {
 import Tables from "../routes/tables.js";
 import pg from "pg";
 import prettier from "prettier";
+import {getSchemaFunctions} from "./_common.js";
 
 type ColumnsPerTable = Record<string, PostgresColumn[]>;
 
@@ -51,7 +52,14 @@ export const apply = ({
 
     const output = `
     const schema = {
-        ${schemas.map((schema) => `${schema.name}: ${writeSchema(schema, tables, columnsByTableId)}`).join(',\n')}
+        ${schemas.map((schema) => `${schema.name}: ${writeSchema(
+            schema, 
+        tables, 
+        columnsByTableId,
+        getSchemaFunctions(functions, schema.name),
+        types,
+        arrayTypes,
+        )}`).join(',\n')}
     }
     `
 
@@ -61,29 +69,111 @@ export const apply = ({
     })
 }
 
-function writeSchema(schema: PostgresSchema, availableTables: PostgresTable[], columnsByTableId: ColumnsPerTable): string {
+function writeSchema(
+    schema: PostgresSchema,
+    availableTables: PostgresTable[],
+    columnsByTableId: ColumnsPerTable,
+    functions: PostgresFunction[],
+    types: PostgresType[],
+    arrayTypes: PostgresType[],
+): string {
     const schemaTables = availableTables
         .filter((table) => table.schema === schema.name)
         .sort(({ name: a }, { name: b }) => a.localeCompare(b))
+    const schemaEnums = types
+        .filter((type) => type.schema === schema.name && type.enums.length > 0)
+        .sort(({ name: a }, { name: b }) => a.localeCompare(b))
 
     return `{
-        insert: {
-            ${schemaTables.map((table) => `${table.name}: ${writeTable(table, columnsByTableId[table.id])}`).join(',\n')}
-        }
+        tables: {
+            ${schemaTables.map(table => `${table.name}: {
+                row: ${writeRowTable(columnsByTableId[table.id], functions.filter(fn => fn.argument_types === table.name), types)},
+                insert: ${writeInsertTable(columnsByTableId[table.id])},
+                update: ${writeUpdateTable(columnsByTableId[table.id])},
+            }`)}
+        },
+        enums: {
+            ${schemaEnums.map(enumType => `${enumType.name}: z.enum([${enumType.enums.map((value) => `"${value}"`).join(', ')} as const])`).join(',\n')}
+        },
+        functions: ${writeFunctions(functions, types, arrayTypes)},
     }`
 }
 
-function writeTable(table: PostgresTable, columns: PostgresColumn[]): string {
-    return `{
+function writeRowTable(columns: PostgresColumn[], readFunctions: PostgresFunction[], types: PostgresType[]): string {
+    return `z.object({
         ${columns.map((column) => `"${column.name}": ${writeColumn(column)}`).join(',\n')},
-        _enums: {
-            ${columns.filter(hasColumnEnum).map((column) => `${getColumnEnum(column)}`).join(',\n')}
-        }
-    }`
+        ${readFunctions.map((func) => `"${func.name}": ${writeReadFunction(func, types)}`).join(',\n')}
+    })`
+}
+
+function writeInsertTable(columns: PostgresColumn[]): string {
+    return `z.object({
+        ${columns.filter(column => column.identity_generation !== "ALWAYS").map((column) => `"${column.name}": ${writeColumn(column)}`).join(',\n')},
+    })`
+}
+
+function writeUpdateTable(columns: PostgresColumn[]): string {
+    return `z.object({
+        ${columns
+        .filter(column => column.identity_generation !== "ALWAYS")
+        .map((column) => `"${column.name}": z.${basicZodType(column.format)}()${joinWithLeading(uniq([...extractGeneralZodMethods(column), "optional()"]), ".")}${joinWithLeading(extractExtraZodMethods(column), ".")}`).join(',\n')},
+    })`
 }
 
 function writeColumn(column: PostgresColumn): string {
-    return `z.${basicZodType(column.format)}()${joinWithLeading(extraZodMethods(column), ".")}`
+    return `z.${basicZodType(column.format)}()${joinWithLeading(extractGeneralZodMethods(column), ".")}${joinWithLeading(extractExtraZodMethods(column), ".")}`
+}
+
+function writeReadFunction(func: PostgresFunction, types: PostgresType[]): string {
+    const type = types.find(({ id }) => id === func.return_type_id)
+    const zodType = type ? basicZodType(type.format) : 'unknown'
+
+    return `z.${zodType}().nullable()`
+}
+
+function writeFunctions(
+    functions: PostgresFunction[],
+    types: PostgresType[],
+    arrayTypes: PostgresType[],
+): string {
+    const schemaFunctionsGroupedByName = functions.reduce((acc, curr) => {
+        acc[curr.name] ??= []
+        acc[curr.name].push(curr)
+        return acc
+    }, {} as Record<string, PostgresFunction[]>)
+
+    return `{
+        ${Object.entries(schemaFunctionsGroupedByName).map(([name, functions]) => {
+            if (functions.length === 1) {
+                return `${functions[0].name}: ${writeFunction(functions[0], types, arrayTypes)}`
+            }
+            
+            return "test: 1"
+    }).join(',\n')}
+    }`
+}
+
+function writeFunction(func: PostgresFunction, types: PostgresType[], arrayTypes: PostgresType[]): string {
+    const inArgs = func.args.filter(({ mode }) => mode === 'in')
+
+    return `z.object({
+        ${inArgs.map(arg => `${JSON.stringify(arg.name)}: ${writeFunctionArg(arg, types, arrayTypes)}`).join(',\n')}
+    })`
+}
+
+function writeFunctionArg(arg: PostgresFunction['args'][0], types: PostgresType[], arrayTypes: PostgresType[]): string {
+    let type = arrayTypes.find(({ id }) => id === arg.type_id)
+    if (type) {
+        // If it's an array type, the name looks like `_int8`.
+        const elementTypeName = type.name.substring(1)
+        return `z.array(z.${basicZodType(elementTypeName)}())` + (arg.has_default ? '.optional()' : '')
+    }
+    type = types.find(({ id }) => id === arg.type_id)
+    if (type) {
+        return `z.${basicZodType(type.format)}()` + (arg.has_default ? '.optional()' : '')
+    }
+
+    return `z.unknown()` + (arg.has_default ? '.optional()' : '')
 }
 
 function hasColumnEnum(column: PostgresColumn): boolean {
@@ -129,7 +219,7 @@ function basicZodType(pgType: string): string {
     return "string"
 }
 
-function extraZodMethods(column: PostgresColumn): string[] {
+function extractExtraZodMethods(column: PostgresColumn): string[] {
     const methods: string[] = []
 
     if (column.format === "uuid") {
@@ -148,9 +238,21 @@ function extraZodMethods(column: PostgresColumn): string[] {
         methods.push(`enum([${column.enums.map((value) => `"${value}"`).join(', ')}] as const)`)
     }
 
-    // General constraints
-    if (column.is_nullable) {
+    return methods
+}
+
+function extractGeneralZodMethods(column: PostgresColumn): string[] {
+    const methods: string[] = []
+
+    if (
+        column.is_nullable ||
+        column.is_identity ||
+        column.default_value !== null
+    ) {
         methods.push("optional()")
+    }
+    if (column.is_nullable) {
+        methods.push("nullable()")
     }
 
     return methods
@@ -162,6 +264,14 @@ function joinWithLeading<T>(arr: T[], join: string): string {
     }
 
     return join + arr.join(join)
+}
+
+/** Remove duplicate values from an array.
+ * Creates a new array.
+ * @param arr - The array to remove duplicates from.
+ */
+function uniq<T>(arr: T[]): T[] {
+    return [...new Set(arr)]
 }
 
 /** Create a zod object type for a table.
