@@ -5,10 +5,8 @@ import {
     PostgresTable, PostgresType,
     PostgresView
 } from "../../lib/index.js";
-import Tables from "../routes/tables.js";
-import pg from "pg";
 import prettier from "prettier";
-import {getSchemaFunctions} from "./_common.js";
+import {filterFromSchema, getSchemaFunctions} from "./_common.js";
 
 type ColumnsPerTable = Record<string, PostgresColumn[]>;
 
@@ -51,13 +49,17 @@ export const apply = ({
      */
 
     const output = `
+    import * as z from 'zod'
+    import { v4 as uuidv4 } from 'uuid'
+    
     const schema = {
         ${schemas.map((schema) => `${schema.name}: ${writeSchema(
             schema, 
-        tables, 
+        filterFromSchema(tables, schema.name),
         columnsByTableId,
         getSchemaFunctions(functions, schema.name),
-        types,
+        filterFromSchema<any>([...views, ...materializedViews], schema.name),
+        filterFromSchema(types, schema.name),
         arrayTypes,
         )}`).join(',\n')}
     }
@@ -74,28 +76,25 @@ function writeSchema(
     availableTables: PostgresTable[],
     columnsByTableId: ColumnsPerTable,
     functions: PostgresFunction[],
+    views: PostgresView[],
     types: PostgresType[],
     arrayTypes: PostgresType[],
 ): string {
-    const schemaTables = availableTables
-        .filter((table) => table.schema === schema.name)
-        .sort(({ name: a }, { name: b }) => a.localeCompare(b))
-    const schemaEnums = types
-        .filter((type) => type.schema === schema.name && type.enums.length > 0)
-        .sort(({ name: a }, { name: b }) => a.localeCompare(b))
-
     return `{
         tables: {
-            ${schemaTables.map(table => `${table.name}: {
+            ${availableTables.map(table => `${table.name}: {
                 row: ${writeRowTable(columnsByTableId[table.id], functions.filter(fn => fn.argument_types === table.name), types)},
                 insert: ${writeInsertTable(columnsByTableId[table.id])},
                 update: ${writeUpdateTable(columnsByTableId[table.id])},
             }`)}
         },
         enums: {
-            ${schemaEnums.map(enumType => `${enumType.name}: z.enum([${enumType.enums.map((value) => `"${value}"`).join(', ')} as const])`).join(',\n')}
+            ${types.filter(enumType => enumType.enums.length > 0).map(enumType => `${enumType.name}: z.enum([${enumType.enums.map((value) => `"${value}"`).join(', ')}] as const)`).join(',\n')}
         },
         functions: ${writeFunctions(functions, types, arrayTypes)},
+        views: {
+            ${views.map(view => `${JSON.stringify(view.name)}: ${writeView(columnsByTableId[view.id])}`)}
+        }
     }`
 }
 
@@ -124,6 +123,12 @@ function writeColumn(column: PostgresColumn): string {
     return `z.${basicZodType(column.format)}()${joinWithLeading(extractGeneralZodMethods(column), ".")}${joinWithLeading(extractExtraZodMethods(column), ".")}`
 }
 
+function writeView(columns: PostgresColumn[]): string {
+    return `z.object({
+        ${columns.filter(column => column.is_updatable).map((column) => `${JSON.stringify(column.name)}: ${writeColumn(column)}`).join(',\n')}
+    })`
+}
+
 function writeReadFunction(func: PostgresFunction, types: PostgresType[]): string {
     const type = types.find(({ id }) => id === func.return_type_id)
     const zodType = type ? basicZodType(type.format) : 'unknown'
@@ -145,7 +150,7 @@ function writeFunctions(
     return `{
         ${Object.entries(schemaFunctionsGroupedByName).map(([name, functions]) => {
             if (functions.length === 1) {
-                return `${functions[0].name}: ${writeFunction(functions[0], types, arrayTypes)}`
+                return `"${functions[0].name}": ${writeFunction(functions[0], types, arrayTypes)}`
             }
             
             return "test: 1"
@@ -176,16 +181,8 @@ function writeFunctionArg(arg: PostgresFunction['args'][0], types: PostgresType[
     return `z.unknown()` + (arg.has_default ? '.optional()' : '')
 }
 
-function hasColumnEnum(column: PostgresColumn): boolean {
-    return column.enums.length > 0
-}
-
-function getColumnEnum(column: PostgresColumn): string {
-    return `${column.format}: z.enum([${column.enums.map((value) => `"${value}"`).join(', ')} as const])`
-}
-
 function basicZodType(pgType: string): string {
-    if (pgType === "boolean") {
+    if ([ 'bool', 'boolean' ].includes(pgType)) {
         return "boolean"
     }
 
@@ -222,8 +219,13 @@ function basicZodType(pgType: string): string {
 function extractExtraZodMethods(column: PostgresColumn): string[] {
     const methods: string[] = []
 
+    // UUID
     if (column.format === "uuid") {
         methods.push("regex(/^[0-9a-fA-F]{8}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{12}$/)")
+
+        if (column.default_value === "gen_random_uuid()") {
+            methods.push("default(() => uuidv4())")
+        }
     }
 
     // Date and time types
