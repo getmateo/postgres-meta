@@ -10,6 +10,31 @@ import {filterFromSchema, getSchemaFunctions} from "./_common.js";
 
 type ColumnsPerTable = Record<string, PostgresColumn[]>;
 
+/** Create a zod object type for a table.
+ * You probably don't want to call this function, unless you're writing a custom template.
+ * Example:
+ * Given a table that looks like this:
+ * ```sql
+ * CREATE TABLE public.users (
+ * id uuid NOT NULL,
+ * name text,
+ * email text NOT NULL,
+ * created_at timestamp without time zone NOT NULL DEFAULT now()
+ * );
+ * The generated zod object would look like this:
+ * ```typescript
+ * const User = z.object({
+ *  // uuid
+ *  id: z.number().regex(/^[0-9a-fA-F]{8}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{12}$/),
+ *  name: z.string().nullable(),
+ *  email: z.string(),
+ *  created_at: z.date().default(() => new Date()),
+ * })
+ *  ```
+ * @param tableName - The name of the table; e.g. `users` will be snake cased and used as the variable name.
+ * @param columns - The columns of the table.
+ * @returns A zod object type.
+ */
 export const apply = ({
                           schemas,
                           tables,
@@ -54,7 +79,6 @@ export const apply = ({
     
     const schema = {
         ${schemas.map((schema) => `${schema.name}: ${writeSchema(
-            schema, 
         filterFromSchema(tables, schema.name),
         columnsByTableId,
         getSchemaFunctions(functions, schema.name),
@@ -72,7 +96,6 @@ export const apply = ({
 }
 
 function writeSchema(
-    schema: PostgresSchema,
     availableTables: PostgresTable[],
     columnsByTableId: ColumnsPerTable,
     functions: PostgresFunction[],
@@ -148,12 +171,18 @@ function writeFunctions(
     }, {} as Record<string, PostgresFunction[]>)
 
     return `{
-        ${Object.entries(schemaFunctionsGroupedByName).map(([name, functions]) => {
+        ${Object.entries(schemaFunctionsGroupedByName).map(([rawFnName, functions]) => {
+            const name = JSON.stringify(rawFnName)
+            
             if (functions.length === 1) {
-                return `"${functions[0].name}": ${writeFunction(functions[0], types, arrayTypes)}`
+                return `name: ${writeFunction(functions[0], types, arrayTypes)}`
             }
             
-            return "test: 1"
+            return `
+                ${name}: z.union([
+                    ${functions.map((func) => writeFunction(func, types, arrayTypes)).join(',\n')}
+                ])
+            `
     }).join(',\n')}
     }`
 }
@@ -178,7 +207,7 @@ function writeFunctionArg(arg: PostgresFunction['args'][0], types: PostgresType[
         return "z." + basicZodType(type.format) + (arg.has_default ? '.optional()' : '')
     }
 
-    console.info(`Function: Unknown type ${arg.type_id}`)
+    console.debug(`Function: Unknown type ${arg.type_id}`)
 
     return `z.unknown()` + (arg.has_default ? '.optional()' : '')
 }
@@ -208,18 +237,21 @@ function basicZodType(pgType: string): string {
             'vector',
             'json',
             'jsonb',
-            'inet'
+            'inet',
+            'cidr',
+            'macaddr',
+            'macaddr8',
+            'character varying',
         ].includes(pgType)
     ) {
         return 'string()'
     }
 
-    if (["date", "time", "timetz", "timestamp", "timestamptz"].includes(pgType)) {
+    if (["date", "time", "timetz", "timestamp", "timestamptz", "timestamp with time zone"].includes(pgType)) {
         return 'date()'
     }
 
-
-    console.info(`Basic Zod Type: Unknown type ${pgType}`)
+    console.debug(`Basic Zod Type: Unknown type ${pgType}`)
 
     // Everything else is an enum
     return "string()"
@@ -232,7 +264,7 @@ function extractExtraZodMethods(column: PostgresColumn): string[] {
 
     // UUID
     if (column.format === "uuid") {
-        methods.push("regex(/^[0-9a-fA-F]{8}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{12}$/)")
+        methods.push("regex(/^[0-9a-fA-F]{8}\\b-[0-9a-fA-F]{4}\\b-[0-9a-fA-F]{4}\\b-[0-9a-fA-F]{4}\\b-[0-9a-fA-F]{12}$/)")
 
         if (column.default_value === "gen_random_uuid()") {
             methods.push("default(() => uuidv4())")
@@ -291,30 +323,3 @@ function joinWithLeading<T>(arr: T[], join: string): string {
 function uniq<T>(arr: T[]): T[] {
     return [...new Set(arr)]
 }
-
-/** Create a zod object type for a table.
- * You probably don't want to call this function, unless you're writing a custom template.
- * Example:
- * Given a table that looks like this:
- * ```sql
- * CREATE TABLE public.users (
- * id uuid NOT NULL,
- * name text,
- * email text NOT NULL,
- * created_at timestamp without time zone NOT NULL DEFAULT now()
- * );
- * The generated zod object would look like this:
- * ```typescript
- * const User = z.object({
- *  // uuid
- *  id: z.number().regex(/^[0-9a-fA-F]{8}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{12}$/),
- *  name: z.string().nullable(),
- *  email: z.string(),
- *  created_at: z.date().default(() => new Date()),
- * })
- *  ```
- * @param tableName - The name of the table; e.g. `users` will be snake cased and used as the variable name.
- * @param columns - The columns of the table.
- * @returns A zod object type.
- */
-function createTableObject(tableName: string, columns: PostgresColumn[]) {}
