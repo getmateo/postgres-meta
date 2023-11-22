@@ -59,7 +59,7 @@ export const apply = ({
         columnsByTableId,
         getSchemaFunctions(functions, schema.name),
         filterFromSchema<any>([...views, ...materializedViews], schema.name),
-        filterFromSchema(types, schema.name),
+        types,
         arrayTypes,
         )}`).join(',\n')}
     }
@@ -115,12 +115,12 @@ function writeUpdateTable(columns: PostgresColumn[]): string {
     return `z.object({
         ${columns
         .filter(column => column.identity_generation !== "ALWAYS")
-        .map((column) => `"${column.name}": z.${basicZodType(column.format)}()${joinWithLeading(uniq([...extractGeneralZodMethods(column), "optional()"]), ".")}${joinWithLeading(extractExtraZodMethods(column), ".")}`).join(',\n')},
+        .map((column) => `"${column.name}": z.${basicZodType(column.format)}${joinWithLeading(uniq([...extractGeneralZodMethods(column), "optional()"]), ".")}${joinWithLeading(extractExtraZodMethods(column), ".")}`).join(',\n')},
     })`
 }
 
 function writeColumn(column: PostgresColumn): string {
-    return `z.${basicZodType(column.format)}()${joinWithLeading(extractGeneralZodMethods(column), ".")}${joinWithLeading(extractExtraZodMethods(column), ".")}`
+    return `z.${basicZodType(column.format)}${joinWithLeading(extractGeneralZodMethods(column), ".")}${joinWithLeading(extractExtraZodMethods(column), ".")}`
 }
 
 function writeView(columns: PostgresColumn[]): string {
@@ -171,23 +171,30 @@ function writeFunctionArg(arg: PostgresFunction['args'][0], types: PostgresType[
     if (type) {
         // If it's an array type, the name looks like `_int8`.
         const elementTypeName = type.name.substring(1)
-        return `z.array(z.${basicZodType(elementTypeName)}())` + (arg.has_default ? '.optional()' : '')
+        return `z.array(z.${basicZodType(elementTypeName)})` + (arg.has_default ? '.optional()' : '')
     }
     type = types.find(({ id }) => id === arg.type_id)
     if (type) {
-        return `z.${basicZodType(type.format)}()` + (arg.has_default ? '.optional()' : '')
+        return "z." + basicZodType(type.format) + (arg.has_default ? '.optional()' : '')
     }
+
+    console.info(`Function: Unknown type ${arg.type_id}`)
 
     return `z.unknown()` + (arg.has_default ? '.optional()' : '')
 }
 
 function basicZodType(pgType: string): string {
-    if ([ 'bool', 'boolean' ].includes(pgType)) {
-        return "boolean"
+    // Array
+    if (pgType.startsWith("_")) {
+        return basicZodType(pgType.substring(1)) + ".array()"
     }
 
-    if (['int2', 'int4', 'int8', 'float4', 'float8', 'numeric', 'integer'].includes(pgType)) {
-        return 'number'
+    if ([ 'bool', 'boolean' ].includes(pgType)) {
+        return "boolean()"
+    }
+
+    if (['int2', 'int4', 'int8', 'float4', 'float8', 'numeric', 'integer', 'bigint', 'oid'].includes(pgType)) {
+        return 'number()'
     }
 
     if (
@@ -201,20 +208,24 @@ function basicZodType(pgType: string): string {
             'vector',
             'json',
             'jsonb',
+            'inet'
         ].includes(pgType)
     ) {
-        return 'string'
+        return 'string()'
     }
 
     if (["date", "time", "timetz", "timestamp", "timestamptz"].includes(pgType)) {
-        return 'date'
+        return 'date()'
     }
 
-    console.info(`Unknown type ${pgType}`)
+
+    console.info(`Basic Zod Type: Unknown type ${pgType}`)
 
     // Everything else is an enum
-    return "string"
+    return "string()"
 }
+
+const IP_REGEX = "^((((25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])\\.){3,3}(25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9]))|((([0-9a-fA-F]{1,4}:){7,7}[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,7}:|([0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,5}(:[0-9a-fA-F]{1,4}){1,2}|([0-9a-fA-F]{1,4}:){1,4}(:[0-9a-fA-F]{1,4}){1,3}|([0-9a-fA-F]{1,4}:){1,3}(:[0-9a-fA-F]{1,4}){1,4}|([0-9a-fA-F]{1,4}:){1,2}(:[0-9a-fA-F]{1,4}){1,5}|[0-9a-fA-F]{1,4}:((:[0-9a-fA-F]{1,4}){1,6})|:((:[0-9a-fA-F]{1,4}){1,7}|:)|fe80:(:[0-9a-fA-F]{0,4}){0,4}%[0-9a-zA-Z]{1,}|::(ffff(:0{1,4}){0,1}:){0,1}((25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])\\.){3,3}(25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])|([0-9a-fA-F]{1,4}:){1,4}:((25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])\\.){3,3}(25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9]))))\\/[0-9]{1,3}$"
 
 function extractExtraZodMethods(column: PostgresColumn): string[] {
     const methods: string[] = []
@@ -238,6 +249,11 @@ function extractExtraZodMethods(column: PostgresColumn): string[] {
     // Enums
     if (column.data_type === "USER-DEFINED") {
         methods.push(`enum([${column.enums.map((value) => `"${value}"`).join(', ')}] as const)`)
+    }
+
+    if (column.format === "inet") {
+        // Zods `ip` method doesn't check for subnets, so we use our own regex instead.
+        methods.push(`regex(/${IP_REGEX}/)`)
     }
 
     return methods
