@@ -72,11 +72,12 @@ export const apply = ({
     
     const schema = {
         ${schemas.map((schema) => `${schema.name}: ${writeSchema(
+        schema.name,
         filterFromSchema(tables, schema.name),
         columnsByTableId,
         filterSchemaFunctions(functions, schema.name),
         filterFromSchema<any>([...views, ...materializedViews], schema.name),
-        filterSchemaEnums(types, schema.name),
+        types,
         arrayTypes,
         )}`).join(',\n')}
     }
@@ -89,6 +90,7 @@ export const apply = ({
 }
 
 function writeSchema(
+    schemaName: string,
     availableTables: PostgresTable[],
     columnsByTableId: ColumnsPerTable,
     functions: PostgresFunction[],
@@ -96,6 +98,8 @@ function writeSchema(
     types: PostgresType[],
     arrayTypes: PostgresType[],
 ): string {
+    const schemaEnums = filterSchemaEnums(types, schemaName)
+
     return `{
         tables: {
             ${availableTables.map(table => `${table.name}: {
@@ -105,7 +109,7 @@ function writeSchema(
             }`)}
         },
         enums: {
-            ${types.filter(enumType => enumType.enums.length > 0).map(enumType => `${enumType.name}: z.enum([${enumType.enums.map((value) => `"${value}"`).join(', ')}] as const)`).join(',\n')}
+            ${schemaEnums.filter(enumType => enumType.enums.length > 0).map(enumType => `${enumType.name}: z.enum([${enumType.enums.map((value) => `"${value}"`).join(', ')}] as const)`).join(',\n')}
         },
         functions: ${writeFunctions(functions, types, arrayTypes)},
         views: {
@@ -168,7 +172,7 @@ function writeFunctions(
             const name = JSON.stringify(rawFnName)
             
             if (functions.length === 1) {
-                return `name: ${writeFunction(functions[0], types, arrayTypes)}`
+                return `${name}: ${writeFunction(functions[0], types, arrayTypes)}`
             }
             
             return `
