@@ -68,7 +68,6 @@ export const apply = ({
 
     const output = `
     import * as z from 'zod'
-    import { v4 as uuidv4 } from 'uuid'
     
     const schema = {
         ${schemas.map((schema) => `${schema.name}: ${writeSchema(
@@ -245,7 +244,7 @@ function basicZodType(pgType: string): string {
     }
 
     if (["date", "time", "timetz", "timestamp", "timestamptz", "timestamp with time zone"].includes(pgType)) {
-        return 'date()'
+        return "string()"
     }
 
     console.debug(`Basic Zod Type: Unknown type ${pgType}`)
@@ -255,25 +254,22 @@ function basicZodType(pgType: string): string {
 }
 
 const IP_REGEX = "^((((25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])\\.){3,3}(25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9]))|((([0-9a-fA-F]{1,4}:){7,7}[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,7}:|([0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,5}(:[0-9a-fA-F]{1,4}){1,2}|([0-9a-fA-F]{1,4}:){1,4}(:[0-9a-fA-F]{1,4}){1,3}|([0-9a-fA-F]{1,4}:){1,3}(:[0-9a-fA-F]{1,4}){1,4}|([0-9a-fA-F]{1,4}:){1,2}(:[0-9a-fA-F]{1,4}){1,5}|[0-9a-fA-F]{1,4}:((:[0-9a-fA-F]{1,4}){1,6})|:((:[0-9a-fA-F]{1,4}){1,7}|:)|fe80:(:[0-9a-fA-F]{0,4}){0,4}%[0-9a-zA-Z]{1,}|::(ffff(:0{1,4}){0,1}:){0,1}((25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])\\.){3,3}(25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])|([0-9a-fA-F]{1,4}:){1,4}:((25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])\\.){3,3}(25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9]))))\\/[0-9]{1,3}$"
-const UUID_REGEX = "^[0-9a-fA-F]{8}\\b-[0-9a-fA-F]{4}\\b-[0-9a-fA-F]{4}\\b-[0-9a-fA-F]{4}\\b-[0-9a-fA-F]{12}$"
 
 function extractExtraZodMethods(column: PostgresColumn): string[] {
     const methods: string[] = []
 
     // UUID
     if (column.format === "uuid") {
-        methods.push(`regex(/${UUID_REGEX}/)`)
-
-        if (column.default_value === "gen_random_uuid()") {
-            methods.push("default(uuidv4)")
-        }
+        methods.push("uuid()")
     }
 
-    // Date and time types
-    if (["date", "time", "timetz", "timestamp", "timestamptz"].includes(column.format)) {
-        if (column.default_value === "now()") {
-            methods.push("default(() => new Date())")
-        }
+    // Dates
+    if (["date", "time"].includes(column.format)) {
+        methods.push("datetime()")
+    }
+
+    if (["timetz", "timestamp", "timestamptz", "timestamp with time zone"].includes(column.format)) {
+        methods.push("datetime({ offset: true })")
     }
 
     // Enums
