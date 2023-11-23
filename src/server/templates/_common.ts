@@ -1,10 +1,10 @@
-import {PostgresFunction, PostgresTable, PostgresType} from "../../lib/index.js";
+import {PostgresFunction, PostgresType} from "../../lib/index.js";
 
 export const filterFromSchema = <T extends {schema: string, name: string}>(items: T[], schemaName: string): T[] => {
     return items.filter((item) => item.schema === schemaName).sort(({name: a}, {name: b}) => a.localeCompare(b))
 }
 
-export const getSchemaFunctions = (functions: PostgresFunction[], schemaName: string): PostgresFunction[] => {
+export const filterSchemaFunctions = (functions: PostgresFunction[], schemaName: string): PostgresFunction[] => {
     return functions
         .filter((func) => {
             if (func.schema !== schemaName) {
@@ -20,3 +20,9 @@ export const getSchemaFunctions = (functions: PostgresFunction[], schemaName: st
         })
         .sort(({ name: a }, { name: b }) => a.localeCompare(b))
 }
+
+export const filterSchemaEnums = (types: PostgresType[], schemaName: string): PostgresType[] =>
+    types
+        .filter((type) => type.schema === schemaName && type.enums.length > 0)
+        .sort(({ name: a }, { name: b }) => a.localeCompare(b))
+

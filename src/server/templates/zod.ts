@@ -6,7 +6,7 @@ import {
     PostgresView
 } from "../../lib/index.js";
 import prettier from "prettier";
-import {filterFromSchema, getSchemaFunctions} from "./_common.js";
+import {filterFromSchema, filterSchemaEnums, filterSchemaFunctions} from "./_common.js";
 
 type ColumnsPerTable = Record<string, PostgresColumn[]>;
 
@@ -66,13 +66,6 @@ export const apply = ({
             return acc
         }, {} as ColumnsPerTable)
 
-    /*
-    Example:
-    ```typescript
-    public.tables.user.insert()
-    ```
-     */
-
     const output = `
     import * as z from 'zod'
     import { v4 as uuidv4 } from 'uuid'
@@ -81,9 +74,9 @@ export const apply = ({
         ${schemas.map((schema) => `${schema.name}: ${writeSchema(
         filterFromSchema(tables, schema.name),
         columnsByTableId,
-        getSchemaFunctions(functions, schema.name),
+        filterSchemaFunctions(functions, schema.name),
         filterFromSchema<any>([...views, ...materializedViews], schema.name),
-        types,
+        filterSchemaEnums(types, schema.name),
         arrayTypes,
         )}`).join(',\n')}
     }
