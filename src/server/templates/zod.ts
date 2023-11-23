@@ -69,6 +69,14 @@ export const apply = ({
     const output = `
     import * as z from 'zod'
     
+    // Used for JSON types, taken from https://github.com/colinhacks/zod#json-type
+    const literalSchema = z.union([z.string(), z.number(), z.boolean(), z.null()]);
+    type Literal = z.infer<typeof literalSchema>;
+    type Json = Literal | { [key: string]: Json } | Json[];
+    const jsonSchema: z.ZodType<Json> = z.lazy(() =>
+      z.union([literalSchema, z.array(jsonSchema), z.record(jsonSchema)])
+    );
+    
     const schema = {
         ${schemas.map((schema) => `${schema.name}: ${writeSchema(
         schema.name,
@@ -222,6 +230,11 @@ function basicZodType(pgType: string): string {
         return 'number()'
     }
 
+
+    if (['json', 'jsonb'].includes(pgType)) {
+        return "object(jsonSchema)"
+    }
+
     if (
         [
             'bytea',
@@ -231,8 +244,6 @@ function basicZodType(pgType: string): string {
             'citext',
             'uuid',
             'vector',
-            'json',
-            'jsonb',
             'inet',
             'cidr',
             'macaddr',
@@ -240,7 +251,7 @@ function basicZodType(pgType: string): string {
             'character varying',
         ].includes(pgType)
     ) {
-        return 'string()'
+        return "string()"
     }
 
     if (["date", "time", "timetz", "timestamp", "timestamptz", "timestamp with time zone"].includes(pgType)) {
