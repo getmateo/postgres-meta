@@ -177,20 +177,27 @@ function writeUpdateTable(columns: PostgresColumn[]): string {
           .filter((column) => column.identity_generation !== 'ALWAYS')
           .map(
             (column) =>
-              `"${column.name}": z.${basicZodType(column.format)}${joinWithLeading(
-                uniq([...extractGeneralZodMethods(column), 'optional()']),
-                '.'
-              )}${joinWithLeading(extractExtraZodMethods(column), '.')}`
+              column.name +
+              ': z' +
+              // 'basicZodType' returns an empty string for enums, so we need to check for that.
+              (basicZodType(column.format) ? '.' : '') +
+              basicZodType(column.format) +
+              joinWithLeading(extractExtraZodMethods(column), '.') +
+              joinWithLeading(uniq([...extractGeneralZodMethods(column), 'optional()']), '.')
           )
           .join(',\n')},
     })`
 }
 
 function writeColumn(column: PostgresColumn): string {
-  return `z.${basicZodType(column.format)}${joinWithLeading(
-    extractGeneralZodMethods(column),
-    '.'
-  )}${joinWithLeading(extractExtraZodMethods(column), '.')}`
+  return (
+    'z' +
+    // 'basicZodType' returns an empty string for enums, so we need to check for that.
+    (basicZodType(column.format) ? '.' : '') +
+    basicZodType(column.format) +
+    joinWithLeading(extractExtraZodMethods(column), '.') +
+    joinWithLeading(extractGeneralZodMethods(column), '.')
+  )
 }
 
 function writeView(columns: PostgresColumn[]): string {
@@ -204,7 +211,7 @@ function writeView(columns: PostgresColumn[]): string {
 
 function writeReadFunction(func: PostgresFunction, types: PostgresType[]): string {
   const type = types.find(({ id }) => id === func.return_type_id)
-  const zodType = type ? basicZodType(type.format) : 'unknown'
+  const zodType = type ? basicZodType(type.format) || 'unknown' : 'unknown'
 
   return `z.${zodType}().nullable()`
 }
@@ -262,11 +269,15 @@ function writeFunctionArg(
   if (type) {
     // If it's an array type, the name looks like `_int8`.
     const elementTypeName = type.name.substring(1)
-    return `z.array(z.${basicZodType(elementTypeName)})` + (arg.has_default ? '.optional()' : '')
+    return (
+      `z.array(z.${basicZodType(elementTypeName) || 'unknown'})` +
+      (arg.has_default ? '.optional()' : '')
+    )
   }
   type = types.find(({ id }) => id === arg.type_id)
   if (type) {
-    return 'z.' + basicZodType(type.format) + (arg.has_default ? '.optional()' : '')
+    const func = basicZodType(type.format)
+    return 'z.' + (func || 'unknown()') + (arg.has_default ? '.optional()' : '')
   }
 
   console.debug(`Function: Unknown type ${arg.type_id}`)
@@ -277,7 +288,9 @@ function writeFunctionArg(
 function basicZodType(pgType: string): string {
   // Array
   if (pgType.startsWith('_')) {
-    return basicZodType(pgType.substring(1)) + '.array()'
+    const subtype = basicZodType(pgType.substring(1))
+
+    return subtype ? 'array(' + subtype + ')' : ''
   }
 
   if (['bool', 'boolean'].includes(pgType)) {
@@ -326,7 +339,8 @@ function basicZodType(pgType: string): string {
   console.debug(`Basic Zod Type: Unknown type ${pgType}`)
 
   // Everything else is an enum
-  return 'string()'
+  // Enums are handled in `extractExtraZodMethods`.
+  return ''
 }
 
 const IP_REGEX =
@@ -365,11 +379,11 @@ function extractExtraZodMethods(column: PostgresColumn): string[] {
 function extractGeneralZodMethods(column: PostgresColumn): string[] {
   const methods: string[] = []
 
-  if (column.is_nullable || column.is_identity || column.default_value !== null) {
-    methods.push('optional()')
-  }
   if (column.is_nullable) {
     methods.push('nullable()')
+  }
+  if (column.is_nullable || column.is_identity || column.default_value !== null) {
+    methods.push('optional()')
   }
 
   return methods
