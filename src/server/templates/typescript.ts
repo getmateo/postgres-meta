@@ -9,6 +9,7 @@ import type {
   PostgresType,
   PostgresView,
 } from '../../lib/index.js'
+import {filterFromSchema, filterSchemaEnums, filterSchemaFunctions} from "./_common.js";
 
 export const apply = ({
   schemas,
@@ -48,37 +49,10 @@ export interface Database {
   ${schemas
     .sort(({ name: a }, { name: b }) => a.localeCompare(b))
     .map((schema) => {
-      const schemaTables = tables
-        .filter((table) => table.schema === schema.name)
-        .sort(({ name: a }, { name: b }) => a.localeCompare(b))
-      const schemaViews = [...views, ...materializedViews]
-        .filter((view) => view.schema === schema.name)
-        .sort(({ name: a }, { name: b }) => a.localeCompare(b))
-      const schemaFunctions = functions
-        .filter((func) => {
-          if (func.schema !== schema.name) {
-            return false
-          }
-
-          // Either:
-          // 1. All input args are be named, or
-          // 2. There is only one input arg which is unnamed
-          const inArgs = func.args.filter(({ mode }) => ['in', 'inout', 'variadic'].includes(mode))
-
-          if (!inArgs.some(({ name }) => name === '')) {
-            return true
-          }
-
-          if (inArgs.length === 1) {
-            return true
-          }
-
-          return false
-        })
-        .sort(({ name: a }, { name: b }) => a.localeCompare(b))
-      const schemaEnums = types
-        .filter((type) => type.schema === schema.name && type.enums.length > 0)
-        .sort(({ name: a }, { name: b }) => a.localeCompare(b))
+        const schemaTables = filterFromSchema(tables, schema.name)
+        const schemaViews = filterFromSchema([...views, ...materializedViews], schema.name)
+        const schemaFunctions = filterSchemaFunctions(functions, schema.name)
+        const schemaEnums = filterSchemaEnums(types, schema.name)
       const schemaCompositeTypes = types
         .filter((type) => type.schema === schema.name && type.attributes.length > 0)
         .sort(({ name: a }, { name: b }) => a.localeCompare(b))

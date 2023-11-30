@@ -13,6 +13,8 @@ import {
   PG_META_PORT,
 } from './constants.js'
 import { apply as applyTypescriptTemplate } from './templates/typescript.js'
+import { apply as applyZodTemplate } from './templates/zod.js'
+import {TemplateProps} from "./types.js";
 
 const logger = pino({
   formatters: {
@@ -33,6 +35,22 @@ if (EXPORT_DOCS) {
   console.log(JSON.stringify(app.swagger(), null, 2))
 } else if (GENERATE_TYPES === 'typescript') {
   // TODO: Move to a separate script.
+  console.log(
+      await applyTemplate(applyTypescriptTemplate)
+  );
+} else if (GENERATE_TYPES === "zod") {
+  console.log(
+      await applyTemplate(applyZodTemplate)
+  );
+}
+else {
+  app.listen({ port: PG_META_PORT, host: PG_META_HOST }, () => {
+    const adminPort = PG_META_PORT + 1
+    adminApp.listen({ port: adminPort, host: PG_META_HOST })
+  })
+}
+
+async function applyTemplate(apply: (props: TemplateProps) => string): Promise<string> {
   const pgMeta: PostgresMeta = new PostgresMeta({
     ...DEFAULT_POOL_CONFIG,
     connectionString: PG_CONNECTION,
@@ -50,27 +68,27 @@ if (EXPORT_DOCS) {
     pgMeta.schemas.list(),
     pgMeta.tables.list({
       includedSchemas:
-        GENERATE_TYPES_INCLUDED_SCHEMAS.length > 0 ? GENERATE_TYPES_INCLUDED_SCHEMAS : undefined,
+          GENERATE_TYPES_INCLUDED_SCHEMAS.length > 0 ? GENERATE_TYPES_INCLUDED_SCHEMAS : undefined,
       includeColumns: false,
     }),
     pgMeta.views.list({
       includedSchemas:
-        GENERATE_TYPES_INCLUDED_SCHEMAS.length > 0 ? GENERATE_TYPES_INCLUDED_SCHEMAS : undefined,
+          GENERATE_TYPES_INCLUDED_SCHEMAS.length > 0 ? GENERATE_TYPES_INCLUDED_SCHEMAS : undefined,
       includeColumns: false,
     }),
     pgMeta.materializedViews.list({
       includedSchemas:
-        GENERATE_TYPES_INCLUDED_SCHEMAS.length > 0 ? GENERATE_TYPES_INCLUDED_SCHEMAS : undefined,
+          GENERATE_TYPES_INCLUDED_SCHEMAS.length > 0 ? GENERATE_TYPES_INCLUDED_SCHEMAS : undefined,
       includeColumns: false,
     }),
     pgMeta.columns.list({
       includedSchemas:
-        GENERATE_TYPES_INCLUDED_SCHEMAS.length > 0 ? GENERATE_TYPES_INCLUDED_SCHEMAS : undefined,
+          GENERATE_TYPES_INCLUDED_SCHEMAS.length > 0 ? GENERATE_TYPES_INCLUDED_SCHEMAS : undefined,
     }),
     pgMeta.relationships.list(),
     pgMeta.functions.list({
       includedSchemas:
-        GENERATE_TYPES_INCLUDED_SCHEMAS.length > 0 ? GENERATE_TYPES_INCLUDED_SCHEMAS : undefined,
+          GENERATE_TYPES_INCLUDED_SCHEMAS.length > 0 ? GENERATE_TYPES_INCLUDED_SCHEMAS : undefined,
     }),
     pgMeta.types.list({
       includeArrayTypes: true,
@@ -104,29 +122,22 @@ if (EXPORT_DOCS) {
     throw new Error(typesError.message)
   }
 
-  console.log(
-    applyTypescriptTemplate({
-      schemas: schemas!.filter(
+  return apply({
+    schemas: schemas!.filter(
         ({ name }) =>
-          GENERATE_TYPES_INCLUDED_SCHEMAS.length === 0 ||
-          GENERATE_TYPES_INCLUDED_SCHEMAS.includes(name)
-      ),
-      tables: tables!,
-      views: views!,
-      materializedViews: materializedViews!,
-      columns: columns!,
-      relationships: relationships!,
-      functions: functions!.filter(
+            GENERATE_TYPES_INCLUDED_SCHEMAS.length === 0 ||
+            GENERATE_TYPES_INCLUDED_SCHEMAS.includes(name)
+    ),
+    tables: tables!,
+    views: views!,
+    materializedViews: materializedViews!,
+    columns: columns!,
+    relationships: relationships!,
+    functions: functions!.filter(
         ({ return_type }) => !['trigger', 'event_trigger'].includes(return_type)
-      ),
-      types: types!.filter(({ name }) => name[0] !== '_'),
-      arrayTypes: types!.filter(({ name }) => name[0] === '_'),
-      detectOneToOneRelationships: GENERATE_TYPES_DETECT_ONE_TO_ONE_RELATIONSHIPS,
-    })
-  )
-} else {
-  app.listen({ port: PG_META_PORT, host: PG_META_HOST }, () => {
-    const adminPort = PG_META_PORT + 1
-    adminApp.listen({ port: adminPort, host: PG_META_HOST })
+    ),
+    types: types!.filter(({ name }) => name[0] !== '_'),
+    arrayTypes: types!.filter(({ name }) => name[0] === '_'),
+    detectOneToOneRelationships: GENERATE_TYPES_DETECT_ONE_TO_ONE_RELATIONSHIPS,
   })
 }
