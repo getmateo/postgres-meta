@@ -155,7 +155,7 @@ function writeRowTable(
   types: PostgresType[]
 ): string {
   return `z.object({
-        ${columns.map((column) => `"${column.name}": ${writeColumn(column)}`).join(',\n')},
+        ${columns.map((column) => `"${column.name}": ${writeRowColumn(column)}`).join(',\n')},
         ${readFunctions
           .map((func) => `"${func.name}": ${writeReadFunction(func, types)}`)
           .join(',\n')}
@@ -175,29 +175,42 @@ function writeUpdateTable(columns: PostgresColumn[]): string {
   return `z.object({
         ${columns
           .filter((column) => column.identity_generation !== 'ALWAYS')
-          .map(
-            (column) =>
+          .map((column) => {
+            const extra = joinWithLeading(extractExtraZodMethods(column), '.')
+            const general = joinWithLeading(
+              uniq([...extractGeneralZodMethods(column), 'optional()']),
+              '.'
+            )
+
+            return (
+              '"' +
               column.name +
-              ': z' +
-              // 'basicZodType' returns an empty string for enums, so we need to check for that.
-              (basicZodType(column.format) ? '.' : '') +
-              basicZodType(column.format) +
-              joinWithLeading(extractExtraZodMethods(column), '.') +
-              joinWithLeading(uniq([...extractGeneralZodMethods(column), 'optional()']), '.')
-          )
+              '"' +
+              ': ' +
+              basicZodType(column.format, !extra ? 'z.string()' : 'z') +
+              extra +
+              general
+            )
+          })
           .join(',\n')},
     })`
 }
 
-function writeColumn(column: PostgresColumn): string {
+function writeRowColumn(column: PostgresColumn): string {
+  const extra = joinWithLeading(extractExtraZodMethods(column), '.')
+
   return (
-    'z' +
-    // 'basicZodType' returns an empty string for enums, so we need to check for that.
-    (basicZodType(column.format) ? '.' : '') +
-    basicZodType(column.format) +
-    joinWithLeading(extractExtraZodMethods(column), '.') +
-    joinWithLeading(extractGeneralZodMethods(column), '.')
+    basicZodType(column.format, !extra ? 'z.string()' : 'z') +
+    extra +
+    (column.is_nullable ? '.nullable()' : '')
   )
+}
+
+function writeColumn(column: PostgresColumn): string {
+  const extra = joinWithLeading(extractExtraZodMethods(column), '.')
+  const general = joinWithLeading(extractGeneralZodMethods(column), '.')
+
+  return basicZodType(column.format, !extra ? 'z.string()' : 'z') + extra + general
 }
 
 function writeView(columns: PostgresColumn[]): string {
@@ -211,9 +224,9 @@ function writeView(columns: PostgresColumn[]): string {
 
 function writeReadFunction(func: PostgresFunction, types: PostgresType[]): string {
   const type = types.find(({ id }) => id === func.return_type_id)
-  const zodType = type ? basicZodType(type.format) || 'unknown' : 'unknown'
+  const zodType = type ? basicZodType(type.format, 'z.unknown()') : 'unknown'
 
-  return `z.${zodType}().nullable()`
+  return zodType
 }
 
 function writeFunctions(
@@ -270,14 +283,13 @@ function writeFunctionArg(
     // If it's an array type, the name looks like `_int8`.
     const elementTypeName = type.name.substring(1)
     return (
-      `z.array(z.${basicZodType(elementTypeName) || 'unknown'})` +
+      `z.array(${basicZodType(elementTypeName, 'z.unknown()')})` +
       (arg.has_default ? '.optional()' : '')
     )
   }
   type = types.find(({ id }) => id === arg.type_id)
   if (type) {
-    const func = basicZodType(type.format)
-    return 'z.' + (func || 'unknown()') + (arg.has_default ? '.optional()' : '')
+    return basicZodType(type.format, 'z.unknown()') + (arg.has_default ? '.optional()' : '')
   }
 
   console.debug(`Function: Unknown type ${arg.type_id}`)
@@ -285,16 +297,16 @@ function writeFunctionArg(
   return `z.unknown()` + (arg.has_default ? '.optional()' : '')
 }
 
-function basicZodType(pgType: string): string {
+function basicZodType(pgType: string, enumFallback = 'z', fallback = 'z.unknown()'): string {
   // Array
   if (pgType.startsWith('_')) {
-    const subtype = basicZodType(pgType.substring(1))
+    const subtype = basicZodType(pgType.substring(1), 'z.unknown()')
 
-    return subtype ? 'array(' + subtype + ')' : ''
+    return subtype ? 'z.array(' + subtype + ')' : fallback
   }
 
   if (['bool', 'boolean'].includes(pgType)) {
-    return 'boolean()'
+    return 'z.boolean()'
   }
 
   if (
@@ -302,11 +314,11 @@ function basicZodType(pgType: string): string {
       pgType
     )
   ) {
-    return 'number()'
+    return 'z.number()'
   }
 
   if (['json', 'jsonb'].includes(pgType)) {
-    return 'object(jsonSchema)'
+    return 'jsonSchema'
   }
 
   if (
@@ -325,7 +337,7 @@ function basicZodType(pgType: string): string {
       'character varying',
     ].includes(pgType)
   ) {
-    return 'string()'
+    return 'z.string()'
   }
 
   if (
@@ -333,14 +345,15 @@ function basicZodType(pgType: string): string {
       pgType
     )
   ) {
-    return 'string()'
+    return 'z.string()'
   }
 
   console.debug(`Basic Zod Type: Unknown type ${pgType}`)
 
   // Everything else is an enum
   // Enums are handled in `extractExtraZodMethods`.
-  return ''
+  // dot is automatically added by the joinWithLeading function
+  return enumFallback
 }
 
 const IP_REGEX =
@@ -364,13 +377,17 @@ function extractExtraZodMethods(column: PostgresColumn): string[] {
   }
 
   // Enums
-  if (column.data_type === 'USER-DEFINED') {
+  if (column.data_type === 'USER-DEFINED' && column.enums.length > 0) {
     methods.push(`enum([${column.enums.map((value) => `"${value}"`).join(', ')}] as const)`)
   }
 
   if (column.format === 'inet') {
     // Zods `ip` method doesn't check for subnets, so we use our own regex instead.
     methods.push(`regex(/${IP_REGEX}/)`)
+  }
+
+  if (column.comment) {
+    methods.push(`describe("${escapeString(column.comment)}")`)
   }
 
   return methods
@@ -403,4 +420,9 @@ function joinWithLeading<T>(arr: T[], join: string): string {
  */
 function uniq<T>(arr: T[]): T[] {
   return [...new Set(arr)]
+}
+
+// Replaces " with \"
+function escapeString(str: string): string {
+  return str.replace(/"/g, '\\"')
 }
